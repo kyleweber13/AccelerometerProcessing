@@ -2,7 +2,6 @@ import pyedflib
 import datetime
 from datetime import timedelta
 from Accelerometer import Accelerometer
-import matplotlib.pyplot as plt
 import pandas as pd
 import os
 
@@ -12,10 +11,35 @@ class Subject:
     def __init__(self, subj_id=None, wrist_filepath=None, ankle_filepath=None, processed_filepath=None,
                  load_raw=True, from_processed=False, output_dir=None, epoch_len=15,
                  write_epoched_data=False, overwrite_output=False):
+        """Class to read in EDF-formatted wrist and ankle accelerometer files.
+
+        :argument
+        -subj_id: used for file naming, str
+            -format example: "OND07_WTL_3013"
+        -wrist_filepath: full pathway to wrist .edf file
+        -ankle_filepath: full pathway to ankle .edf file
+        -processed_filepath: full pathway to .csv file created using Subject.create_epoch_df()
+        -load_raw: whether to load raw data; boolean
+        -from_processed: whether to load file specified using processed_filepath; boolean
+        -output_dir: full pathway to where files get written
+        -epoch_len: epoch length in seconds, int
+        -write_epoched_data: whether to write df_epoch to .csv; boolean
+        -overwrite_output: whether to automatically overwrite existing df_epoch file; boolean
+            -If False, user will be prompted to manually overwrite existing file.
+        """
 
         self.subj_id = subj_id
-        self.wrist_filepath = wrist_filepath.format(subj_id.split("_")[-1])
-        self.ankle_filepath = ankle_filepath.format(subj_id.split("_")[-1])
+
+        if wrist_filepath is not None:
+            self.wrist_filepath = wrist_filepath.format(subj_id.split("_")[-1])
+        if wrist_filepath is None:
+            self.wrist_filepath = None
+
+        if ankle_filepath is not None:
+            self.ankle_filepath = ankle_filepath.format(subj_id.split("_")[-1])
+        if ankle_filepath is None:
+            self.ankle_filepath = None
+
         self.processed_filepath = processed_filepath
         self.output_dir = output_dir
         self.load_raw = load_raw
@@ -27,28 +51,31 @@ class Subject:
         # ================================================== RUNS METHODS =============================================
         self.print_summary()
 
-        print("\nImporting data file(s)...\n")
+        if self.load_raw:
+            self.wrist_offset, self.ankle_offset = self.sync_starts()
 
-        self.wrist_offset, self.ankle_offset = self.sync_starts()
+            self.wrist, self.cutpoint_dict = self.create_wrist_obj()
 
-        self.wrist, self.cutpoint_dict = self.create_wrist_obj()
+            self.wrist_svm, self.wrist_avm = self.epoch_accel(acc_type="wrist",
+                                                              fs=self.wrist.sample_rate,
+                                                              vm_data=self.wrist.accel_vm)
 
-        self.wrist_svm, self.wrist_avm = self.epoch_accel(acc_type="wrist",
-                                                          fs=self.wrist.sample_rate,
-                                                          vm_data=self.wrist.accel_vm)
+            self.ankle = self.create_ankle_obj()
 
-        self.ankle = self.create_ankle_obj()
+            self.ankle_svm, self.ankle_avm = self.epoch_accel(acc_type="ankle",
+                                                              fs=self.ankle.sample_rate,
+                                                              vm_data=self.ankle.accel_vm)
 
-        self.ankle_svm, self.ankle_avm = self.epoch_accel(acc_type="ankle",
-                                                          fs=self.ankle.sample_rate,
-                                                          vm_data=self.ankle.accel_vm)
+            self.df_epoch = self.create_epoch_df(write_df=self.write_epoched)
 
-        self.df_epoch = self.create_epoch_df(write_df=self.write_epoched)
+        if self.from_processed:
+            self.df_epoch = self.import_processed_df()
 
         print("\n====================================================================================================")
         print("Processing complete.")
 
     def print_summary(self):
+        """Prints summary of what data will be read in."""
 
         print("======================================================================================================")
         print("\nData import summary:")
@@ -78,7 +105,13 @@ class Subject:
 
     @staticmethod
     def check_file(filepath, print_summary=True):
-        """Calculates file duration with start and end times. Prints results to console."""
+        """Checks EDF header info to retrieve start time and sample rate.
+           Used for cropping ankle and wrist accelerometers data.
+
+        :returns
+        -start time: timestamp
+        -sampling rate: Hz (int)
+        """
 
         if filepath is None:
             return None, None, None
@@ -96,12 +129,17 @@ class Subject:
             print("-End time:", end_time)
             print("-Duration: {} hours".format(round(duration / 3600, 2)))
 
-        return start_time, end_time, edf_file.getSampleFrequency(0)
+        return start_time, edf_file.getSampleFrequency(0)
     
     def sync_starts(self):
+        """Crops ankle/wrist accelerometer file so they start at the same time.
 
-        a_start, a_end, a_sample = self.check_file(filepath=self.ankle_filepath, print_summary=False)
-        w_start, w_end, w_sample = self.check_file(filepath=self.wrist_filepath, print_summary=False)
+        :returns
+        -ankle_offset, wrist_offest: number of samples that one file gets cropped by. Other value will be 0.
+        """
+
+        a_start, a_sample = self.check_file(filepath=self.ankle_filepath, print_summary=False)
+        w_start, w_sample = self.check_file(filepath=self.wrist_filepath, print_summary=False)
 
         # Crops start times
         if a_start is not None and w_start is not None:
@@ -132,16 +170,18 @@ class Subject:
             return 0, 0
 
     def create_wrist_obj(self):
+        """Creates wrist accelerometer data object.
+           Scales accelerometer cutpoints from Powell et al. (2017) to selected epoch length.
+
+        :returns
+        -wrist object
+        -cutpoints: dictionary
+        """
 
         print("\n--------------------------------------------- Wrist file --------------------------------------------")
         wrist = Accelerometer(raw_filepath=self.wrist_filepath,
-                              processed_filepath=None,
-                              output_dir=self.output_dir,
-                              epoch_len=self.epoch_len,
                               load_raw=self.load_raw,
-                              start_offset=self.wrist_offset,
-                              from_processed=self.from_processed,
-                              overwrite_without_asking=False)
+                              start_offset=self.wrist_offset)
 
         cutpoint_dict = {"Light": 47 * wrist.sample_rate * self.epoch_len / 15,
                          "Moderate": 64 * wrist.sample_rate * self.epoch_len / 15,
@@ -150,21 +190,28 @@ class Subject:
         return wrist, cutpoint_dict
 
     def create_ankle_obj(self):
+        """Creates ankle accelerometer data object.
+
+        :returns
+        -ankle object
+        """
 
         print("\n--------------------------------------------- Ankle file --------------------------------------------")
 
         ankle = Accelerometer(raw_filepath=self.ankle_filepath,
-                              processed_filepath=None,
-                              output_dir=self.output_dir,
-                              epoch_len=self.epoch_len,
                               load_raw=self.load_raw,
-                              from_processed=self.from_processed,
-                              start_offset=self.ankle_offset,
-                              overwrite_without_asking=False)
+                              start_offset=self.ankle_offset)
 
         return ankle
 
     def epoch_accel(self, acc_type, fs, vm_data):
+        """Epochs accelerometer data. Calculates sum of vector magnitudes (SVM) and average vector magnitude (AVM)
+           values for specified epoch length.
+
+           :returns
+           -svm: list
+           -avm: list
+        """
 
         # Epochs data if read in raw and didn't read in processed data -----------------------------------------------
         if not self.load_raw or self.from_processed:
@@ -196,6 +243,17 @@ class Subject:
             return svm, avm
 
     def create_epoch_df(self, write_df=False):
+        """Creates dataframe for epoched wrist and ankle data.
+           Deletes corresponding data objects for memory management.
+           Option to write to .csv and to automatically overwrite existing file. If file is not to be overwritten,
+           user is prompted to manually overwrite.
+
+        :argument
+        -write_df: boolean
+
+        :returns
+        -epoched dataframe: df
+        """
 
         print("\nCombining data into single dataframe...")
 
@@ -246,13 +304,28 @@ class Subject:
 
         return df
 
+    def import_processed_df(self):
+        """Imports existing processed epoch data file (.csv).
+
+        :returns
+        -dataframe: df
+        """
+
+        print("\nImporting existing data ({})".format(self.processed_filepath.split("/")[-1]))
+
+        df = pd.read_csv(self.processed_filepath)
+
+        return df
+
 
 s = Subject(subj_id="OND07_WTL_3013",
-            ankle_filepath="/Users/kyleweber/Desktop/Data/OND07/EDF/OND07_WTL_{}_01_GA_LAnkle_Accelerometer.EDF",
-            wrist_filepath="/Users/kyleweber/Desktop/Data/OND07/EDF/OND07_WTL_{}_01_GA_LWrist_Accelerometer.EDF",
-            load_raw=True,
+            # ankle_filepath="/Users/kyleweber/Desktop/Data/OND07/EDF/OND07_WTL_{}_01_GA_LAnkle_Accelerometer.EDF",
+            # wrist_filepath="/Users/kyleweber/Desktop/Data/OND07/EDF/OND07_WTL_{}_01_GA_LWrist_Accelerometer.EDF",
+            load_raw=False,
             epoch_len=15,
-            from_processed=False,
-            processed_filepath=None,
+
+            processed_filepath="/Users/kyleweber/Desktop/OND07_WTL_3013_EpochedAccelerometer.csv",
+            from_processed=True,
+
             output_dir="/Users/kyleweber/Desktop/",
             write_epoched_data=True, overwrite_output=True)

@@ -3,6 +3,7 @@ from datetime import datetime
 from datetime import timedelta
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 
 
 class GENEActiv:
@@ -75,4 +76,3 @@ class GENEActiv:
         t1 = datetime.now()
         proc_time = (t1 - t0).seconds
         print("Import complete ({} seconds).".format(round(proc_time, 2)))
-

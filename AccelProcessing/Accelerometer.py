@@ -1,4 +1,4 @@
-import AccelProcessing.ImportEDF
+import AccelProcessing.ImportEDF as ImportEDF
 
 
 class Accelerometer:

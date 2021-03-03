@@ -16,6 +16,9 @@ class Accelerometer:
 
     def load_raw_data(self):
 
+        if self.filepath is None:
+            return None, None, None, None, None, None, None
+
         accel = ImportEDF.GENEActiv(filepath=self.filepath, load_raw=self.load_raw,
                                     start_offset=self.start_offset, end_offset=0)
 

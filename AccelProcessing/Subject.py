@@ -515,47 +515,9 @@ class Subject:
         plt.xticks(rotation=45, fontsize=8)
 
 
-# Sample run
-
-
-folder = "/Volumes/nimbal$/Data/OND05/Processed Data/OND05_ALL_00_GENEActiv_2020FEB23_DATAPKG/Accelerometer/DATAFILES/"
-files = [i for i in os.listdir(folder) if ".edf" in i and "_A_" in i and ("Wrist" in i or "Ankle" in i)]
-subjs = set([i.split("_A_")[0] for i in files])
-
-for subj in subjs:
-    try:
-        s = Subject(subj_id=subj,
-                    ankle_filepath="{}{}_A_GENEActiv_Accelerometer_LWrist.edf".format(folder, subj),
-                    wrist_filepath="{}{}_A_GENEActiv_Accelerometer_LAnkle.edf".format(folder, subj),
-                    load_raw=True,
-                    epoch_len=15,
-                    cutpoints="Powell",
-
-                    processed_filepath="/Users/kyleweber/Desktop/OND07_ProcessedAnkle/OND07_WTL_{}_EpochedAccelerometer.csv",
-                    from_processed=False,
-
-                    output_dir="/Users/kyleweber/Desktop/OND05/",
-                    write_epoched_data=True, write_intensity_data=True,
-                    overwrite_output=False)
-    except OSError:
-        s = Subject(subj_id=subj,
-                    ankle_filepath="{}{}_A_GENEActiv_Accelerometer_RWrist.edf".format(folder, subj),
-                    wrist_filepath="{}{}_A_GENEActiv_Accelerometer_RAnkle.edf".format(folder, subj),
-                    load_raw=True,
-                    epoch_len=15,
-                    cutpoints="Powell",
-
-                    processed_filepath="/Users/kyleweber/Desktop/OND07_ProcessedAnkle/OND07_WTL_{}_EpochedAccelerometer.csv",
-                    from_processed=False,
-
-                    output_dir="/Users/kyleweber/Desktop/OND05/",
-                    write_epoched_data=True, write_intensity_data=True,
-                    overwrite_output=False)
-
-"""
 s = Subject(subj_id="OND07_WTL_3034",
             # ankle_filepath="/Users/kyleweber/Desktop/Data/OND07/EDF/OND07_WTL_{}_01_GA_LAnkle_Accelerometer.EDF",
-            # wrist_filepath="/Users/kyleweber/Desktop/Data/OND07/EDF/OND07_WTL_{}_01_GA_LWrist_Accelerometer.EDF",
+            wrist_filepath="/Users/kyleweber/Desktop/Data/OND07/EDF/OND07_WTL_{}_01_GA_LWrist_Accelerometer.EDF",
             load_raw=True,
             epoch_len=15,
             cutpoints="Fraysse",
@@ -566,4 +528,5 @@ s = Subject(subj_id="OND07_WTL_3034",
             output_dir="/Users/kyleweber/Desktop/",
             write_epoched_data=True, write_intensity_data=True,
             overwrite_output=False)
-"""
+
+# Update None read-ins

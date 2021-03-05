@@ -6,28 +6,39 @@ import os
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import AccelProcessing.Accelerometer as Accelerometer
+import AccelProcessing.Filtering as Filtering
 
 
 class Subject:
 
     def __init__(self, subj_id=None, wrist_filepath=None, ankle_filepath=None, processed_filepath=None,
-                 load_raw=True, from_processed=False, output_dir=None, epoch_len=15, cutpoints="Powell",
+                 load_raw=True, from_processed=False, output_dir="", epoch_len=15, cutpoints="Powell",
                  write_epoched_data=False, write_intensity_data=False, overwrite_output=False):
         """Class to read in EDF-formatted wrist and ankle accelerometer files.
 
         :argument
         -subj_id: used for file naming, str
-            -format example: "OND07_WTL_3013"
+            -format example: "OND07_WTL_3013", or "007"
+
         -wrist_filepath: full pathway to wrist .edf file
+            -Include {} where subj_id gets inserted
         -ankle_filepath: full pathway to ankle .edf file
-        -processed_filepath: full pathway to .csv file created using Subject.create_epoch_df()
+            -Include {} where subj_id gets inserted
+
         -load_raw: whether to load raw data; boolean
-        -from_processed: whether to load file specified using processed_filepath; boolean
-        -output_dir: full pathway to where files get written
         -epoch_len: epoch length in seconds, int
+
+        -processed_filepath: full pathway to .csv file created using Subject.create_epoch_df() OR existing csv file
+            -Needs to include {} where the subject ID should be
+        -from_processed: whether to load file specified using processed_filepath; boolean
+
+
         -cutpoints: str for which cutpoints to use
             -"Powell" for Powell et al. 2017 or "Fraysse" for Fraysse et al. 2021
+
+        -output_dir: full pathway to where files get written
         -write_epoched_data: whether to write df_epoch to .csv; boolean
+            -One row for each epoch; contains WristSVM, WristAVM, AnkleSVM, AnkleAVM
         -write_intensity_data: whether to write df_daily and activity_totals to .csv's; boolean
         -overwrite_output: whether to automatically overwrite existing df_epoch file; boolean
             -If False, user will be prompted to manually overwrite existing file.
@@ -36,16 +47,16 @@ class Subject:
         self.subj_id = subj_id
 
         if wrist_filepath is not None:
-            self.wrist_filepath = wrist_filepath.format(subj_id.split("_")[-1])
+            self.wrist_filepath = wrist_filepath.format(subj_id)
         if wrist_filepath is None:
             self.wrist_filepath = None
 
         if ankle_filepath is not None:
-            self.ankle_filepath = ankle_filepath.format(subj_id.split("_")[-1])
+            self.ankle_filepath = ankle_filepath.format(subj_id)
         if ankle_filepath is None:
             self.ankle_filepath = None
 
-        self.processed_filepath = processed_filepath.format(subj_id.split("_")[-1])
+        self.processed_filepath = processed_filepath.format(subj_id)
         self.output_dir = output_dir
         self.load_raw = load_raw
         self.from_processed = from_processed
@@ -139,20 +150,27 @@ class Subject:
         if filepath is None:
             return None, None
 
-        edf_file = pyedflib.EdfReader(filepath)
+        if filepath is not None and not os.path.exists(filepath):
+            print("Could not find {}.".format(filepath))
+            print("Try again.")
+            return None, None
 
-        duration = edf_file.getFileDuration()
-        start_time = edf_file.getStartdatetime()
-        end_time = start_time + timedelta(seconds=edf_file.getFileDuration())
+        if filepath is not None and os.path.exists(filepath):
 
-        if print_summary:
-            print("\n", filepath)
-            print("-Sample rate: {}Hz".format(edf_file.getSampleFrequency(0)))
-            print("-Start time: ", start_time)
-            print("-End time:", end_time)
-            print("-Duration: {} hours".format(round(duration / 3600, 2)))
+            edf_file = pyedflib.EdfReader(filepath)
 
-        return start_time, edf_file.getSampleFrequency(0)
+            duration = edf_file.getFileDuration()
+            start_time = edf_file.getStartdatetime()
+            end_time = start_time + timedelta(seconds=edf_file.getFileDuration())
+
+            if print_summary:
+                print("\n", filepath)
+                print("-Sample rate: {}Hz".format(edf_file.getSampleFrequency(0)))
+                print("-Start time: ", start_time)
+                print("-End time:", end_time)
+                print("-Duration: {} hours".format(round(duration / 3600, 2)))
+
+            return start_time, edf_file.getSampleFrequency(0)
     
     def sync_starts(self):
         """Crops ankle/wrist accelerometer file so they start at the same time.
@@ -393,7 +411,15 @@ class Subject:
                 df = self.df_daily.copy()
 
                 df.insert(loc=0, column="ID", value=[self.subj_id for i in range(self.df_daily.shape[0])])
-                wear_loc = self.wrist_filepath.split("/")[-1].split(".")[0].split("_")[-2]
+
+                # Sets wear location based on presence of "LW"/"RW" in filename
+                if "LW" in self.wrist_filepath.split("/")[-1]:
+                    wear_loc = "LW"
+                elif "RW" in self.wrist_filepath.split("/")[-1]:
+                    wear_loc = "RW"
+                else:
+                    wear_loc = "Unknown"
+
                 df.insert(loc=1, column="location", value=[wear_loc for i in range(self.df_daily.shape[0])])
                 df.insert(loc=2, column="epoch_len", value=[self.epoch_len for i in range(self.df_daily.shape[0])])
                 df.insert(loc=3, column="cutpoints", value=[self.cutpoints for i in range(self.df_daily.shape[0])])
@@ -515,18 +541,20 @@ class Subject:
         plt.xticks(rotation=45, fontsize=8)
 
 
-s = Subject(subj_id="OND07_WTL_3034",
-            # ankle_filepath="/Users/kyleweber/Desktop/Data/OND07/EDF/OND07_WTL_{}_01_GA_LAnkle_Accelerometer.EDF",
-            wrist_filepath="/Users/kyleweber/Desktop/Data/OND07/EDF/OND07_WTL_{}_01_GA_LWrist_Accelerometer.EDF",
+s = Subject(
+            subj_id="Run",
+            # subj_id="OND07_WTL_3034",
+            ankle_filepath="/Users/kyleweber/Desktop/Student Supervision/Kin 472 - Megan/Data/Converted/{}_GENEActiv_Accelerometer_LA.edf",
+            wrist_filepath="/Users/kyleweber/Desktop/Student Supervision/Kin 472 - Megan/Data/Converted/{}_GENEActiv_Accelerometer_LW.edf",
+            # ankle_filepath="/Users/kyleweber/Desktop/Data/OND07/EDF/{}_01_GA_LAnkle_Accelerometer.EDF",
+            # wrist_filepath="/Users/kyleweber/Desktop/Data/OND07/EDF/{}_01_GA_LWrist_Accelerometer.EDF",
             load_raw=True,
             epoch_len=15,
-            cutpoints="Fraysse",
+            cutpoints="Powell",
 
-            processed_filepath="/Users/kyleweber/Desktop/OND07_ProcessedAnkle/OND07_WTL_{}_EpochedAccelerometer.csv",
+            processed_filepath="/Users/kyleweber/Desktop/{}_EpochedAccelerometer.csv",
             from_processed=False,
 
             output_dir="/Users/kyleweber/Desktop/",
             write_epoched_data=True, write_intensity_data=True,
             overwrite_output=False)
-
-# Update None read-ins

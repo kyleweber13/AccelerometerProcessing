@@ -615,10 +615,11 @@ class Subject:
         plt.xticks(rotation=45, fontsize=8)
 
 
+
 """
 s = Subject(
             subj_id="OND07_WTL_3034",
-            ankle_filepath="/Users/kyleweber/Desktop/Data/OND07/EDF/{}_01_GA_LAnkle_Accelerometer.EDF",
+            # ankle_filepath="/Users/kyleweber/Desktop/Data/OND07/EDF/{}_01_GA_LAnkle_Accelerometer.EDF",
             wrist_filepath="/Users/kyleweber/Desktop/Data/OND07/EDF/{}_01_GA_LWrist_Accelerometer.EDF",
             load_raw=True,
             epoch_len=15,

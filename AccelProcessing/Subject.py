@@ -1,52 +1,76 @@
 import pyedflib
 import datetime
 from datetime import timedelta
-from Accelerometer import Accelerometer
 import pandas as pd
+import numpy as np
 import os
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-import Filtering
+import AccelProcessing.Accelerometer as Accelerometer
+import AccelProcessing.Filtering as Filtering
 
 
 class Subject:
 
     def __init__(self, subj_id=None, wrist_filepath=None, ankle_filepath=None, processed_filepath=None,
-                 load_raw=True, from_processed=False, output_dir=None, epoch_len=15, cutpoints="Powell",
+                 load_raw=True, from_processed=False, output_dir="", epoch_len=15, cutpoints="Powell",
                  write_epoched_data=False, write_intensity_data=False, overwrite_output=False):
         """Class to read in EDF-formatted wrist and ankle accelerometer files.
 
+           N.B.:
+               -SVM values are in Gs while AVM values are in mG!!!
+               -Fraysse cutpoints are for categorizing activity into sedentary, light, or MVPA while Powell cutpoints
+                are for sedentary, light, moderate, and vigorous. When using Fraysse cutpoints, daily vigorous activity
+                will be 0s even though it was not calculated. MVPA is calculated with either cutpoint set.
+
         :argument
         -subj_id: used for file naming, str
-            -format example: "OND07_WTL_3013"
+            -format example: "OND07_WTL_3013", or "007"
+
         -wrist_filepath: full pathway to wrist .edf file
+            -Include {} where subj_id gets inserted
+            -If no file, pass None
         -ankle_filepath: full pathway to ankle .edf file
-        -processed_filepath: full pathway to .csv file created using Subject.create_epoch_df()
+            -Include {} where subj_id gets inserted
+            -If no file, pass None
+
         -load_raw: whether to load raw data; boolean
-        -from_processed: whether to load file specified using processed_filepath; boolean
-        -output_dir: full pathway to where files get written
         -epoch_len: epoch length in seconds, int
+
+        -processed_filepath: full pathway to .csv file created using Subject.create_epoch_df() (1-second epochs)
+                             OR existing csv file
+            -Needs to include {} where the subject ID should be
+                -E.g.: {}_Epoch1_Accelerometer.csv
+        -from_processed: whether to load file specified using processed_filepath; boolean
+
         -cutpoints: str for which cutpoints to use
             -"Powell" for Powell et al. 2017 or "Fraysse" for Fraysse et al. 2021
+
+        -output_dir: full pathway to where files get written
         -write_epoched_data: whether to write df_epoch to .csv; boolean
+            -One row for each epoch; contains WristSVM, WristAVM, AnkleSVM, AnkleAVM
         -write_intensity_data: whether to write df_daily and activity_totals to .csv's; boolean
         -overwrite_output: whether to automatically overwrite existing df_epoch file; boolean
             -If False, user will be prompted to manually overwrite existing file.
         """
 
         self.subj_id = subj_id
+        self.wrist_exists = False
+        self.ankle_exists = False
 
         if wrist_filepath is not None:
-            self.wrist_filepath = wrist_filepath.format(subj_id.split("_")[-1])
+            self.wrist_filepath = wrist_filepath.format(subj_id)
+            self.wrist_exists = os.path.exists(self.wrist_filepath)
         if wrist_filepath is None:
             self.wrist_filepath = None
 
         if ankle_filepath is not None:
-            self.ankle_filepath = ankle_filepath.format(subj_id.split("_")[-1])
+            self.ankle_filepath = ankle_filepath.format(subj_id)
+            self.ankle_exists = os.path.exists(self.ankle_filepath)
         if ankle_filepath is None:
             self.ankle_filepath = None
 
-        self.processed_filepath = processed_filepath.format(subj_id.split("_")[-1])
+        self.processed_filepath = processed_filepath.format(subj_id)
         self.output_dir = output_dir
         self.load_raw = load_raw
         self.from_processed = from_processed
@@ -65,14 +89,14 @@ class Subject:
         if self.load_raw:
             self.wrist_offset, self.ankle_offset = self.sync_starts()
 
-            if self.wrist_filepath is not None:
-                self.wrist, self.cutpoint_dict = self.create_wrist_obj()
+            self.wrist, self.cutpoint_dict = self.create_wrist_obj()
 
-                self.wrist_svm, self.wrist_avm = self.epoch_accel(acc_type="wrist",
-                                                                  fs=self.wrist.sample_rate,
-                                                                  vm_data=self.wrist.accel_vm)
+            self.wrist_svm, self.wrist_avm = self.epoch_accel(acc_type="wrist",
+                                                              fs=self.wrist.sample_rate if self.wrist_exists else 1,
+                                                              vm_data=self.wrist.accel_vm if self.wrist_exists else [],
+                                                              epoch_len=1)
 
-            if self.wrist_filepath is None:
+            if not self.wrist_exists:
                 self.wrist = None
                 self.cutpoint_dict = None
                 self.wrist_svm = None
@@ -81,16 +105,27 @@ class Subject:
             self.ankle = self.create_ankle_obj()
 
             self.ankle_svm, self.ankle_avm = self.epoch_accel(acc_type="ankle",
-                                                              fs=self.ankle.sample_rate,
-                                                              vm_data=self.ankle.accel_vm)
+                                                              fs=self.ankle.sample_rate if self.ankle_exists else 1,
+                                                              vm_data=self.ankle.accel_vm if self.ankle_exists else 1,
+                                                              epoch_len=1)
 
-            self.df_epoch = self.create_epoch_df()
+            self.df_epoch1s = self.create_epoch_df(epoch_len=1)
+            self.df_epoch = self.create_epoch_df(epoch_len=self.epoch_len)
+            del self.wrist_svm, self.wrist_avm, self.ankle_svm, self.ankle_avm
 
         if self.from_processed:
-            self.df_epoch = self.import_processed_df()
+            self.df_epoch1s, self.df_epoch = self.import_processed_df(epoch_len=self.epoch_len)
 
-        if self.wrist_filepath is not None:
+        if (self.load_raw and self.wrist_exists) or (not self.wrist_exists and self.from_processed):
             self.calculate_wrist_intensity()
+
+        if not self.wrist_exists and not self.from_processed:
+            print("\nSkipping wrist intensity calculation (no file given).")
+            self.df_epoch["WristIntensity"] = [None for i in range(self.df_epoch.shape[0])]
+
+        if not self.wrist_exists and self.from_processed:
+            print("\nSkipping wrist intensity calculation (unknown sample rate).")
+            self.df_epoch["WristIntensity"] = [None for i in range(self.df_epoch.shape[0])]
 
         if self.write_epoched:
             self.write_epoched_df()
@@ -104,18 +139,19 @@ class Subject:
         print("======================================================================================================")
         print("\nData import summary:")
 
-        if self.wrist_filepath is not None:
-            print("-Importing wrist file: {}".format(self.wrist_filepath))
-        if self.wrist_filepath is None:
-            print("-No wrist file will be imported.")
-
-        if self.ankle_filepath is not None:
-            print("-Importing ankle file: {}".format(self.ankle_filepath))
-        if self.ankle_filepath is None:
-            print("-No ankle file will be imported.")
-
         if self.load_raw:
             print("\n-Raw data will be imported.")
+
+            if self.wrist_exists:
+                print("-Importing wrist file: {}".format(self.wrist_filepath))
+            if not self.wrist_exists:
+                print("-No wrist file will be imported.")
+
+            if self.ankle_exists:
+                print("-Importing ankle file: {}".format(self.ankle_filepath))
+            if not self.ankle_exists:
+                print("-No ankle file will be imported.")
+
         if not self.load_raw:
             print("\n-Raw data will not be imported.")
 
@@ -140,20 +176,27 @@ class Subject:
         if filepath is None:
             return None, None
 
-        edf_file = pyedflib.EdfReader(filepath)
+        if filepath is not None and not os.path.exists(filepath):
+            print("Could not find {}.".format(filepath))
+            print("Try again.")
+            return None, None
 
-        duration = edf_file.getFileDuration()
-        start_time = edf_file.getStartdatetime()
-        end_time = start_time + timedelta(seconds=edf_file.getFileDuration())
+        if filepath is not None and os.path.exists(filepath):
 
-        if print_summary:
-            print("\n", filepath)
-            print("-Sample rate: {}Hz".format(edf_file.getSampleFrequency(0)))
-            print("-Start time: ", start_time)
-            print("-End time:", end_time)
-            print("-Duration: {} hours".format(round(duration / 3600, 2)))
+            edf_file = pyedflib.EdfReader(filepath)
 
-        return start_time, edf_file.getSampleFrequency(0)
+            duration = edf_file.getFileDuration()
+            start_time = edf_file.getStartdatetime()
+            end_time = start_time + timedelta(seconds=edf_file.getFileDuration())
+
+            if print_summary:
+                print("\n", filepath)
+                print("-Sample rate: {}Hz".format(edf_file.getSampleFrequency(0)))
+                print("-Start time: ", start_time)
+                print("-End time:", end_time)
+                print("-Duration: {} hours".format(round(duration / 3600, 2)))
+
+            return start_time, edf_file.getSampleFrequency(0)
     
     def sync_starts(self):
         """Crops ankle/wrist accelerometer file so they start at the same time.
@@ -203,13 +246,13 @@ class Subject:
         """
 
         print("\n--------------------------------------------- Wrist file --------------------------------------------")
-        if self.wrist_filepath is not None:
-            wrist = Accelerometer(raw_filepath=self.wrist_filepath,
-                                  load_raw=self.load_raw,
-                                  start_offset=self.wrist_offset)
+        if self.wrist_exists:
+            wrist = Accelerometer.Accelerometer(raw_filepath=self.wrist_filepath,
+                                                load_raw=self.load_raw,
+                                                start_offset=self.wrist_offset)
             fs = wrist.sample_rate
 
-        if self.wrist_filepath is None:
+        if not self.wrist_exists:
             wrist = None
             fs = 1
 
@@ -236,13 +279,13 @@ class Subject:
 
         print("\n--------------------------------------------- Ankle file --------------------------------------------")
 
-        ankle = Accelerometer(raw_filepath=self.ankle_filepath,
-                              load_raw=self.load_raw,
-                              start_offset=self.ankle_offset)
+        ankle = Accelerometer.Accelerometer(raw_filepath=self.ankle_filepath,
+                                            load_raw=self.load_raw,
+                                            start_offset=self.ankle_offset)
 
         return ankle
 
-    def epoch_accel(self, acc_type, fs, vm_data):
+    def epoch_accel(self, acc_type, fs, vm_data, epoch_len):
         """Epochs accelerometer data. Calculates sum of vector magnitudes (SVM) and average vector magnitude (AVM)
            values for specified epoch length.
 
@@ -257,26 +300,31 @@ class Subject:
 
         if self.load_raw and not self.from_processed:
 
-            print("\nEpoching {} data into {}-second epochs...".format(acc_type, self.epoch_len))
-            t0 = datetime.datetime.now()
+            try:
+                print("\nEpoching {} data into {}-second epochs...".format(acc_type, epoch_len))
+                t0 = datetime.datetime.now()
 
-            vm = [i for i in vm_data]
-            svm = []
-            avm = []
+                vm = [i for i in vm_data]
+                svm = []
+                avm = []
 
-            for i in range(0, len(vm), int(fs * self.epoch_len)):
+                for i in range(0, len(vm), int(fs * epoch_len)):
 
-                if i + self.epoch_len * fs > len(vm):
-                    break
+                    if i + epoch_len * fs > len(vm):
+                        break
 
-                vm_sum = sum(vm[i:i + self.epoch_len * fs])
-                avg = vm_sum * 1000 / len(vm[i:i + self.epoch_len * fs])
+                    vm_sum = sum(vm[i:i + epoch_len * fs])
+                    avg = vm_sum * 1000 / len(vm[i:i + epoch_len * fs])
 
-                svm.append(round(vm_sum, 2))
-                avm.append(round(avg, 2))
+                    svm.append(round(vm_sum, 2))
+                    avm.append(round(avg, 2))
 
-            t1 = datetime.datetime.now()
-            print("Complete ({} seconds)".format(round((t1 - t0).total_seconds(), 1)))
+                t1 = datetime.datetime.now()
+                print("Complete ({} seconds)".format(round((t1 - t0).total_seconds(), 1)))
+
+            except TypeError:
+                print("\nNo {} file given.".format(acc_type))
+                svm, avm = [], []
 
             return svm, avm
 
@@ -307,6 +355,8 @@ class Subject:
         epoch_to_mins = 60 / self.epoch_len
         values = self.df_epoch["WristIntensity"].value_counts()
 
+        if "Light" not in values.keys():
+            values["Light"] = 0
         if "Moderate" not in values.keys():
             values["Moderate"] = 0
         if "Vigorous" not in values.keys():
@@ -362,7 +412,7 @@ class Subject:
             write_file = False
 
             file_list = os.listdir(self.output_dir)
-            f_name = "{}_DailyActivityVolume.csv".format(self.subj_id)
+            f_name = "{}_Epoch{}{}_DailyActivityVolume.csv".format(self.subj_id, self.epoch_len, self.cutpoints)
 
             # What to do if file already exists
             if f_name in file_list:
@@ -389,20 +439,30 @@ class Subject:
             # Writing file?
             if write_file:
                 print("Writing total activity volume data to "
-                      "{}{}_DailyActivityVolume.csv".format(self.output_dir, self.subj_id))
+                      "{}{}_Epoch{}{}_DailyActivityVolume.csv".format(self.output_dir, self.subj_id,
+                                                                      self.epoch_len, self.cutpoints))
 
                 df = self.df_daily.copy()
 
                 df.insert(loc=0, column="ID", value=[self.subj_id for i in range(self.df_daily.shape[0])])
-                wear_loc = self.wrist_filepath.split("/")[-1].split(".")[0].split("_")[-2]
+
+                # Sets wear location based on presence of "LW"/"RW" in filename
+                if "LW" in self.wrist_filepath.split("/")[-1]:
+                    wear_loc = "LW"
+                elif "RW" in self.wrist_filepath.split("/")[-1]:
+                    wear_loc = "RW"
+                else:
+                    wear_loc = "Unknown"
+
                 df.insert(loc=1, column="location", value=[wear_loc for i in range(self.df_daily.shape[0])])
                 df.insert(loc=2, column="epoch_len", value=[self.epoch_len for i in range(self.df_daily.shape[0])])
                 df.insert(loc=3, column="cutpoints", value=[self.cutpoints for i in range(self.df_daily.shape[0])])
 
-            df.to_csv("{}{}_DailyActivityVolume.csv".format(self.output_dir, self.subj_id),
+            df.to_csv("{}{}_Epoch{}{}_DailyActivityVolume.csv".format(self.output_dir, self.subj_id,
+                                                                      self.epoch_len, self.cutpoints),
                       index=False, float_format='%.2f')
 
-    def create_epoch_df(self):
+    def create_epoch_df(self, epoch_len=1):
         """Creates dataframe for epoched wrist and ankle data.
            Deletes corresponding data objects for memory management.
            Option to write to .csv and to automatically overwrite existing file. If file is not to be overwritten,
@@ -417,25 +477,42 @@ class Subject:
 
         print("\nCombining data into single dataframe...")
 
-        if self.wrist_filepath is not None:
+        # Sets timestamps if available from wrist; fills in empty data if no Ankle file
+        if self.wrist_exists:
             timestamps = pd.date_range(start=self.wrist.timestamps[0], end=self.wrist.timestamps[-1],
-                                       freq="{}S".format(self.epoch_len))
+                                       freq="{}S".format(epoch_len))
 
-        if self.ankle_filepath is not None and self.wrist_filepath is None:
+            wrist_svm = [sum(self.wrist.accel_vm[i:int(i+self.wrist.sample_rate*epoch_len)]) for
+                         i in range(0, len(self.wrist.accel_vm), int(self.wrist.sample_rate*epoch_len))]
+
+            wrist_avm = [1000*np.mean(self.wrist.accel_vm[i:int(i+self.wrist.sample_rate*epoch_len)]) for
+                         i in range(0, len(self.wrist.accel_vm), int(self.wrist.sample_rate*epoch_len))]
+
+            if not self.ankle_exists:
+                ankle_svm = [None for i in range(len(timestamps))]
+                ankle_avm = [None for i in range(len(timestamps))]
+
+        # Sets timestamps if available from Ankle; fills in empty data if no Wrist file
+        if self.ankle_exists and not self.wrist_exists:
             timestamps = pd.date_range(start=self.ankle.timestamps[0], end=self.ankle.timestamps[-1],
-                                       freq="{}S".format(self.epoch_len))
-            self.wrist_svm = [None for i in range(len(timestamps))]
-            self.wrist_avm = [None for i in range(len(timestamps))]
+                                       freq="{}S".format(epoch_len))
+            wrist_svm = [None for i in range(len(timestamps))]
+            wrist_avm = [None for i in range(len(timestamps))]
 
-        df = pd.DataFrame(list(zip(timestamps, self.wrist_svm, self.wrist_avm, self.ankle_svm, self.ankle_avm)),
+        if self.ankle_exists:
+            ankle_svm = [sum(self.ankle.accel_vm[i:int(i+self.ankle.sample_rate*epoch_len)]) for
+                         i in range(0, len(self.ankle.accel_vm), int(self.ankle.sample_rate*epoch_len))]
+
+            ankle_avm = [1000*np.mean(self.ankle.accel_vm[i:int(i+self.ankle.sample_rate*epoch_len)]) for
+                         i in range(0, len(self.ankle.accel_vm), int(self.ankle.sample_rate*epoch_len))]
+
+        df = pd.DataFrame(list(zip(timestamps, wrist_svm, wrist_avm, ankle_svm, ankle_avm)),
                           columns=["Timestamp", "WristSVM", "WristAVM", "AnkleSVM", "AnkleAVM"])
-
-        del self.wrist_svm, self.wrist_avm, self.ankle_svm, self.ankle_avm
 
         return df
 
-    def import_processed_df(self):
-        """Imports existing processed epoch data file (.csv).
+    def import_processed_df(self, epoch_len):
+        """Imports existing processed 1s epoch data file (.csv) and re-epochs into self.epoch_len epochs.
 
         :returns
         -dataframe: df
@@ -446,14 +523,26 @@ class Subject:
         df = pd.read_csv(self.processed_filepath)
         df["Timestamp"] = pd.to_datetime(df["Timestamp"])
 
-        return df
+        wrist_svm = [sum(df["WristSVM"].iloc[i:i+epoch_len]) for i in range(0, df.shape[0], epoch_len)]
+        wrist_avm = [1000*sum(df["WristSVM"].iloc[i:i+epoch_len]/epoch_len) for i in range(0, df.shape[0], epoch_len)]
+
+        ankle_svm = [sum(df["AnkleSVM"].iloc[i:i+epoch_len]) for i in range(0, df.shape[0], epoch_len)]
+        ankle_avm = [1000*sum(df["AnkleSVM"].iloc[i:i+epoch_len]/epoch_len) for i in range(0, df.shape[0], epoch_len)]
+
+        df_long = pd.DataFrame(list(zip(df["Timestamp"].iloc[::epoch_len],
+                                        wrist_svm, wrist_avm, ankle_svm, ankle_avm)))
+        df_long.columns = ["Timestamp", "WristSVM", "WristAVM", "AnkleSVM", "AnkleAVM"]
+
+        df_long["WristIntensity"] = [None for i in range(df_long.shape[0])]
+
+        return df, df_long
 
     def write_epoched_df(self):
 
         write_file = False
 
         file_list = os.listdir(self.output_dir)
-        f_name = "{}_EpochedAccelerometer.csv".format(self.subj_id)
+        f_name = "{}_Epoch{}_Accelerometer.csv".format(self.subj_id, self.epoch_len)
 
         # What to do if file already exists -----------------------------------------------------------------------
         if f_name in file_list:
@@ -479,9 +568,19 @@ class Subject:
 
         # Writing file? -------------------------------------------------------------------------------------------
         if write_file:
-            print("Writing epoched data to {}{}_EpochedAccelerometer.csv".format(self.output_dir, self.subj_id))
-            self.df_epoch.to_csv("{}{}_EpochedAccelerometer.csv".format(self.output_dir, self.subj_id),
+            print("\nWriting epoched data to {}{}_Epoch{}_Accelerometer.csv".format(self.output_dir,
+                                                                                    self.subj_id,
+                                                                                    self.epoch_len))
+            self.df_epoch.to_csv("{}{}_Epoch{}_Accelerometer.csv".format(self.output_dir,
+                                                                         self.subj_id,
+                                                                         self.epoch_len),
                                  index=False, float_format='%.2f')
+
+            print("\nWriting epoched data to {}{}_Epoch1_Accelerometer.csv".format(self.output_dir,
+                                                                                    self.subj_id))
+            self.df_epoch1s.to_csv("{}{}_Epoch1_Accelerometer.csv".format(self.output_dir,
+                                                                          self.subj_id),
+                                   index=False, float_format='%.2f')
 
     def filter_epoched_data(self, col_name=None, fs=1, filter_type="lowpass", low_f=0.05, high_f=10):
 
@@ -504,7 +603,7 @@ class Subject:
         fig, ax = plt.subplots(1, figsize=(10, 6))
         plt.subplots_adjust(bottom=.125)
         ax.plot(self.df_epoch["Timestamp"], self.df_epoch[col_name],
-                 color='black', label="Epoch_{}s".format(self.epoch_len))
+                color='black', label="Epoch_{}s".format(self.epoch_len))
         ax.plot(self.df_epoch["Timestamp"], self.df_epoch[col_name + "_Filt"], color='red', label="Filtered")
         ax.set_title(col_name)
         ax.legend()
@@ -516,19 +615,19 @@ class Subject:
         plt.xticks(rotation=45, fontsize=8)
 
 
-# Sample run
-
-
-s = Subject(subj_id="OND07_WTL_3034",
-            ankle_filepath="/Users/kyleweber/Desktop/Data/OND07/EDF/OND07_WTL_{}_01_GA_LAnkle_Accelerometer.EDF",
-            wrist_filepath="/Users/kyleweber/Desktop/Data/OND07/EDF/OND07_WTL_{}_01_GA_LWrist_Accelerometer.EDF",
+"""
+s = Subject(
+            subj_id="OND07_WTL_3034",
+            ankle_filepath="/Users/kyleweber/Desktop/Data/OND07/EDF/{}_01_GA_LAnkle_Accelerometer.EDF",
+            wrist_filepath="/Users/kyleweber/Desktop/Data/OND07/EDF/{}_01_GA_LWrist_Accelerometer.EDF",
             load_raw=True,
             epoch_len=15,
             cutpoints="Fraysse",
 
-            processed_filepath="/Users/kyleweber/Desktop/OND07_ProcessedAnkle/OND07_WTL_{}_EpochedAccelerometer.csv",
+            processed_filepath="/Users/kyleweber/Desktop/{}_Epoch1_Accelerometer.csv",
             from_processed=False,
 
             output_dir="/Users/kyleweber/Desktop/",
             write_epoched_data=True, write_intensity_data=True,
-            overwrite_output=False)
+            overwrite_output=True)
+"""

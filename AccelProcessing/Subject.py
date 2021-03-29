@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import AccelProcessing.Accelerometer as Accelerometer
 import AccelProcessing.Filtering as Filtering
+from nwfiles.pipeline import nwdata as nwdata
 
 
 class Subject:
@@ -92,7 +93,7 @@ class Subject:
             self.wrist, self.cutpoint_dict = self.create_wrist_obj()
 
             self.wrist_svm, self.wrist_avm = self.epoch_accel(acc_type="wrist",
-                                                              fs=self.wrist.sample_rate if self.wrist_exists else 1,
+                                                              fs=self.wrist.fs if self.wrist_exists else 1,
                                                               vm_data=self.wrist.accel_vm if self.wrist_exists else [],
                                                               epoch_len=1)
 
@@ -105,7 +106,7 @@ class Subject:
             self.ankle = self.create_ankle_obj()
 
             self.ankle_svm, self.ankle_avm = self.epoch_accel(acc_type="ankle",
-                                                              fs=self.ankle.sample_rate if self.ankle_exists else 1,
+                                                              fs=self.ankle.fs if self.ankle_exists else 1,
                                                               vm_data=self.ankle.accel_vm if self.ankle_exists else 1,
                                                               epoch_len=1)
 
@@ -236,6 +237,40 @@ class Subject:
 
             return 0, 0
 
+    def create_ankle_obj(self):
+        """Creates ankle accelerometer data object.
+
+        :returns
+        -ankle object
+        """
+
+        print("\n--------------------------------------------- Ankle file --------------------------------------------")
+
+        if self.ankle_exists:
+            ankle = nwdata.nwdata()
+            ankle.import_edf(file_path=self.ankle_filepath)
+
+            fs = ankle.signal_headers[0]["sample_rate"]
+            ankle.fs = fs
+
+            ankle.x = ankle.signals[0][self.ankle_offset:]
+            ankle.y = ankle.signals[0][self.ankle_offset:]
+            ankle.z = ankle.signals[0][self.ankle_offset:]
+
+            # Calculates gravity-subtracted vector magnitude
+            # Negative values become zero
+            ankle.accel_vm = np.sqrt(np.square(ankle.signals).sum(axis=0)) - 1
+            ankle.accel_vm[ankle.accel_vm < 0] = 0
+            del ankle.signals
+
+            ankle.timestamps = pd.date_range(start=ankle.header["startdate"],
+                                             freq="{}ms".format(round(1000 / fs, 6)), periods=len(ankle.x))
+
+        if not self.wrist_exists:
+            ankle = None
+
+        return ankle
+
     def create_wrist_obj(self):
         """Creates wrist accelerometer data object.
            Scales accelerometer cutpoints from Powell et al. (2017) to selected epoch length.
@@ -247,10 +282,24 @@ class Subject:
 
         print("\n--------------------------------------------- Wrist file --------------------------------------------")
         if self.wrist_exists:
-            wrist = Accelerometer.Accelerometer(raw_filepath=self.wrist_filepath,
-                                                load_raw=self.load_raw,
-                                                start_offset=self.wrist_offset)
-            fs = wrist.sample_rate
+            wrist = nwdata.nwdata()
+            wrist.import_edf(file_path=self.wrist_filepath)
+
+            fs = wrist.signal_headers[0]["sample_rate"]
+            wrist.fs = fs
+
+            wrist.x = wrist.signals[0][self.wrist_offset:]
+            wrist.y = wrist.signals[0][self.wrist_offset:]
+            wrist.z = wrist.signals[0][self.wrist_offset:]
+
+            # Calculates gravity-subtracted vector magnitude
+            # Negative values become zero
+            wrist.accel_vm = np.sqrt(np.square(wrist.signals).sum(axis=0)) - 1
+            wrist.accel_vm[wrist.accel_vm < 0] = 0
+            del wrist.signals
+
+            wrist.timestamps = pd.date_range(start=wrist.header["startdate"],
+                                             freq="{}ms".format(round(1000 / fs, 6)), periods=len(wrist.x))
 
         if not self.wrist_exists:
             wrist = None
@@ -266,24 +315,9 @@ class Subject:
         # Cutpoints use AVM and are independent of sample rates and  epoch lengths
         if self.cutpoints.capitalize() == "Fraysse":
             print("\nSetting cutpoints to cutpoints from Fraysse et al. 2021.")
-            cutpoint_dict = {"Light": 42.5, "Moderate": 62.5, "Vigorous": 10000}
+            cutpoint_dict = {"Light": 42.5, "Moderate": 62.5, "Vigorous": 100000}
 
         return wrist, cutpoint_dict
-
-    def create_ankle_obj(self):
-        """Creates ankle accelerometer data object.
-
-        :returns
-        -ankle object
-        """
-
-        print("\n--------------------------------------------- Ankle file --------------------------------------------")
-
-        ankle = Accelerometer.Accelerometer(raw_filepath=self.ankle_filepath,
-                                            load_raw=self.load_raw,
-                                            start_offset=self.ankle_offset)
-
-        return ankle
 
     def epoch_accel(self, acc_type, fs, vm_data, epoch_len):
         """Epochs accelerometer data. Calculates sum of vector magnitudes (SVM) and average vector magnitude (AVM)
@@ -482,11 +516,11 @@ class Subject:
             timestamps = pd.date_range(start=self.wrist.timestamps[0], end=self.wrist.timestamps[-1],
                                        freq="{}S".format(epoch_len))
 
-            wrist_svm = [sum(self.wrist.accel_vm[i:int(i+self.wrist.sample_rate*epoch_len)]) for
-                         i in range(0, len(self.wrist.accel_vm), int(self.wrist.sample_rate*epoch_len))]
+            wrist_svm = [sum(self.wrist.accel_vm[i:int(i+self.wrist.fs*epoch_len)]) for
+                         i in range(0, len(self.wrist.accel_vm), int(self.wrist.fs*epoch_len))]
 
-            wrist_avm = [1000*np.mean(self.wrist.accel_vm[i:int(i+self.wrist.sample_rate*epoch_len)]) for
-                         i in range(0, len(self.wrist.accel_vm), int(self.wrist.sample_rate*epoch_len))]
+            wrist_avm = [1000*np.mean(self.wrist.accel_vm[i:int(i+self.wrist.fs*epoch_len)]) for
+                         i in range(0, len(self.wrist.accel_vm), int(self.wrist.fs*epoch_len))]
 
             if not self.ankle_exists:
                 ankle_svm = [None for i in range(len(timestamps))]
@@ -500,11 +534,11 @@ class Subject:
             wrist_avm = [None for i in range(len(timestamps))]
 
         if self.ankle_exists:
-            ankle_svm = [sum(self.ankle.accel_vm[i:int(i+self.ankle.sample_rate*epoch_len)]) for
-                         i in range(0, len(self.ankle.accel_vm), int(self.ankle.sample_rate*epoch_len))]
+            ankle_svm = [sum(self.ankle.accel_vm[i:int(i+self.ankle.fs*epoch_len)]) for
+                         i in range(0, len(self.ankle.accel_vm), int(self.ankle.fs*epoch_len))]
 
-            ankle_avm = [1000*np.mean(self.ankle.accel_vm[i:int(i+self.ankle.sample_rate*epoch_len)]) for
-                         i in range(0, len(self.ankle.accel_vm), int(self.ankle.sample_rate*epoch_len))]
+            ankle_avm = [1000*np.mean(self.ankle.accel_vm[i:int(i+self.ankle.fs*epoch_len)]) for
+                         i in range(0, len(self.ankle.accel_vm), int(self.ankle.fs*epoch_len))]
 
         df = pd.DataFrame(list(zip(timestamps, wrist_svm, wrist_avm, ankle_svm, ankle_avm)),
                           columns=["Timestamp", "WristSVM", "WristAVM", "AnkleSVM", "AnkleAVM"])
@@ -615,20 +649,17 @@ class Subject:
         plt.xticks(rotation=45, fontsize=8)
 
 
-
-"""
 s = Subject(
             subj_id="OND07_WTL_3034",
-            # ankle_filepath="/Users/kyleweber/Desktop/Data/OND07/EDF/{}_01_GA_LAnkle_Accelerometer.EDF",
-            wrist_filepath="/Users/kyleweber/Desktop/Data/OND07/EDF/{}_01_GA_LWrist_Accelerometer.EDF",
+            ankle_filepath="/Users/kyleweber/Desktop/Student Supervision/Kin 472 - Megan/Data/Converted/Collection 3/HIIT_GENEActiv_Accelerometer_003_A_LA.edf",
+            wrist_filepath="/Users/kyleweber/Desktop/Student Supervision/Kin 472 - Megan/Data/Converted/Collection 3/HIIT_GENEActiv_Accelerometer_003_A_LW.edf",
             load_raw=True,
             epoch_len=15,
-            cutpoints="Fraysse",
+            cutpoints="Powell",
 
             processed_filepath="/Users/kyleweber/Desktop/{}_Epoch1_Accelerometer.csv",
             from_processed=False,
 
             output_dir="/Users/kyleweber/Desktop/",
-            write_epoched_data=True, write_intensity_data=True,
+            write_epoched_data=False, write_intensity_data=False,
             overwrite_output=True)
-"""

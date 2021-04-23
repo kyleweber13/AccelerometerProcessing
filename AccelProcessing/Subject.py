@@ -6,9 +6,9 @@ import numpy as np
 import os
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-import AccelProcessing.Accelerometer as Accelerometer
 import AccelProcessing.Filtering as Filtering
-from nwfiles.pipeline import nwdata as nwdata
+# from nwfiles.pipeline import nwdata as nwdata
+import nwdata
 
 
 class Subject:
@@ -247,7 +247,8 @@ class Subject:
         print("\n--------------------------------------------- Ankle file --------------------------------------------")
 
         if self.ankle_exists:
-            ankle = nwdata.nwdata()
+            # ankle = nwdata.nwdata()
+            ankle = nwdata.NWData()
             ankle.import_edf(file_path=self.ankle_filepath)
 
             fs = ankle.signal_headers[0]["sample_rate"]
@@ -266,7 +267,7 @@ class Subject:
             ankle.timestamps = pd.date_range(start=ankle.header["startdate"],
                                              freq="{}ms".format(round(1000 / fs, 6)), periods=len(ankle.x))
 
-        if not self.wrist_exists:
+        if not self.ankle_exists:
             ankle = None
 
         return ankle
@@ -282,7 +283,8 @@ class Subject:
 
         print("\n--------------------------------------------- Wrist file --------------------------------------------")
         if self.wrist_exists:
-            wrist = nwdata.nwdata()
+            # wrist = nwdata.nwdata()
+            wrist = nwdata.NWData()
             wrist.import_edf(file_path=self.wrist_filepath)
 
             fs = wrist.signal_headers[0]["sample_rate"]
@@ -616,43 +618,12 @@ class Subject:
                                                                           self.subj_id),
                                    index=False, float_format='%.2f')
 
-    def filter_epoched_data(self, col_name=None, fs=1, filter_type="lowpass", low_f=0.05, high_f=10):
 
-        if filter_type != "bandpass":
-            print("\nFiltering {} with {}Hz {} filter...".format(col_name, low_f, filter_type))
-        if filter_type == "bandpass":
-            print("\nFiltering {} with {}-{}Hz {} filter...".format(col_name, low_f, high_f, filter_type))
-
-        filtered = Filtering.filter_signal(data=self.df_epoch[col_name], filter_type=filter_type,
-                                           sample_f=fs, low_f=low_f, high_f=high_f)
-
-        filtered = [i if i >= 0 else 0 for i in filtered]
-
-        self.df_epoch[col_name + "_Filt"] = filtered
-
-        print("Complete.")
-
-    def plot_filtered(self, col_name="AnkleAVM"):
-
-        fig, ax = plt.subplots(1, figsize=(10, 6))
-        plt.subplots_adjust(bottom=.125)
-        ax.plot(self.df_epoch["Timestamp"], self.df_epoch[col_name],
-                color='black', label="Epoch_{}s".format(self.epoch_len))
-        ax.plot(self.df_epoch["Timestamp"], self.df_epoch[col_name + "_Filt"], color='red', label="Filtered")
-        ax.set_title(col_name)
-        ax.legend()
-
-        ax.fill_between(self.df_epoch["Timestamp"], 0, self.df_epoch[col_name + "_Filt"], color='red', alpha=.25)
-
-        xfmt = mdates.DateFormatter("%Y/%m/%d\n%H:%M:%S")
-        ax.xaxis.set_major_formatter(xfmt)
-        plt.xticks(rotation=45, fontsize=8)
-
-
+"""
 s = Subject(
-            subj_id="OND07_WTL_3034",
-            ankle_filepath="/Users/kyleweber/Desktop/Student Supervision/Kin 472 - Megan/Data/Converted/Collection 3/HIIT_GENEActiv_Accelerometer_003_A_LA.edf",
-            wrist_filepath="/Users/kyleweber/Desktop/Student Supervision/Kin 472 - Megan/Data/Converted/Collection 3/HIIT_GENEActiv_Accelerometer_003_A_LW.edf",
+            subj_id="001",
+            ankle_filepath="/Users/kyleweber/Desktop/Student Supervision/Kin 472 - Megan/Data/Converted/Collection 1/HIIT_GENEActiv_Accelerometer_01_LA.edf",
+            wrist_filepath="/Users/kyleweber/Desktop/Student Supervision/Kin 472 - Megan/Data/Converted/Collection 1/HIIT_GENEActiv_Accelerometer_01_LW.edf",
             load_raw=True,
             epoch_len=15,
             cutpoints="Powell",
@@ -663,3 +634,4 @@ s = Subject(
             output_dir="/Users/kyleweber/Desktop/",
             write_epoched_data=False, write_intensity_data=False,
             overwrite_output=True)
+"""
